@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>사부 차트 비기 — Upbit KRW 자동 스캐너</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <style>
+    body { background-color: #0b0e14; color: #e2e8f0; font-family: -apple-system, BlinkMacSystemFont, sans-serif; }
+    .badge-READY { background: #15803d; color: white; }
+    .badge-BUILDING { background: #0369a1; color: white; }
+    .badge-TRIGGERED { background: #b45309; color: white; }
+    .badge-WATCH { background: #475569; color: white; }
+    .badge-CHASE { background: #b91c1c; color: white; }
+  </style>
+</head>
+<body class="p-4 max-w-lg mx-auto">
+
+  <!-- Header -->
+  <header class="mb-4 text-center border-b border-gray-800 pb-3">
+    <h1 class="text-xl font-bold text-yellow-400">사부 차트 비기</h1>
+    <p class="text-xs text-gray-400">Upbit KRW 실시간 후보 자동 스캐너</p>
+    <div id="statusTag" class="mt-2 text-xs text-green-400">● API 준비됨</div>
+  </header>
+
+  <!-- Controls -->
+  <section class="bg-gray-900 p-4 rounded-xl border border-gray-800 mb-4">
+    <div class="flex justify-between items-center mb-3">
+      <label class="text-sm font-semibold">최소 24H 거래대금</label>
+      <select id="minVol" class="bg-gray-800 text-sm p-1 rounded border border-gray-700">
+        <option value="10">100억 이상</option>
+        <option value="30" selected>300억 이상</option>
+        <option value="50">500억 이상</option>
+      </select>
+    </div>
+    <button id="scanBtn" onclick="startScan()" class="w-full bg-yellow-500 hover:bg-yellow-600 text-black font-bold py-2.5 rounded-lg transition">
+      전체 스캔 시작
+    </button>
+  </section>
+
+  <!-- Progress Bar -->
+  <section id="progressArea" class="hidden bg-gray-900 p-4 rounded-xl border border-gray-800 mb-4">
+    <div class="flex justify-between text-xs mb-1">
+      <span id="progressText" class="text-gray-300">스캔 시작 중...</span>
+      <span id="progressPct" class="text-yellow-400 font-bold">0%</span>
+    </div>
+    <div class="w-full bg-gray-800 h-2 rounded-full overflow-hidden">
+      <div id="progressBar" class="bg-yellow-500 h-full w-0 transition-all duration-200"></div>
+    </div>
+  </section>
+
+  <!-- Results Area -->
+  <main id="resultsList" class="space-y-3">
+    <div class="text-center py-10 text-gray-500 text-sm">
+      [전체 스캔 시작] 버튼을 눌러 실제 업비트 데이터를 분석하세요.
+    </div>
+  </main>
+
+  <!-- Modal for Details -->
+  <div id="detailModal" class="fixed inset-0 bg-black/80 hidden z-50 p-4 overflow-y-auto">
+    <div class="bg-gray-900 rounded-xl p-4 max-w-md mx-auto border border-gray-700">
+      <div class="flex justify-between items-center mb-3">
+        <h2 id="modalTitle" class="text-lg font-bold text-yellow-400">--</h2>
+        <button onclick="closeModal()" class="text-gray-400 text-xl font-bold">&times;</button>
+      </div>
+      <div class="h-48 mb-4">
+        <canvas id="chartCanvas"></canvas>
+      </div>
+      <div id="modalBody" class="space-y-2 text-xs text-gray-300"></div>
+      <p class="text-[10px] text-gray-500 mt-4 text-center">
+        ※ 차트 데이터 기반 분석 참고값이며 실제 매매 결과를 보장하지 않습니다.
+      </p>
+    </div>
+  </div>
+
+  <script>
+    let activeCandidates = [];
+    let chartInstance = null;
+
+    function startScan() {
+      const minVol = document.getElementById('minVol').value;
+      const progressArea = document.getElementById('progressArea');
+      const progressText = document.getElementById('progressText');
+      const progressPct = document.getElementById('progressPct');
+      const progressBar = document.getElementById('progressBar');
+      const resultsList = document.getElementById('resultsList');
+      const scanBtn = document.getElementById('scanBtn');
+
+      scanBtn.disabled = true;
+      scanBtn.classList.add('opacity-50');
+      progressArea.classList.remove('hidden');
+      resultsList.innerHTML = '';
+
+      const evtSource = new EventSource(`/api/scan-stream?minVol=${minVol}`);
+
+      evtSource.addEventListener('progress', (e) => {
+        const data = JSON.parse(e.data);
+        progressText.innerText = data.step;
+        progressPct.innerText = `${data.percent}%`;
+        progressBar.style.width = `${data.percent}%`;
+      });
+
+      evtSource.addEventListener('complete', (e) => {
+        const data = JSON.parse(e.data);
+        activeCandidates = data.candidates;
+        evtSource.close();
+        scanBtn.disabled = false;
+        scanBtn.classList.remove('opacity-50');
+        renderCandidates(activeCandidates);
+      });
+
+      evtSource.addEventListener('error', (e) => {
+        evtSource.close();
+        scanBtn.disabled = false;
+        scanBtn.classList.remove('opacity-50');
+        progressText.innerText = '오류 발생';
+        alert('스캔 중 오류가 발생했습니다.');
+      });
+    }
+
+    function renderCandidates(list) {
+      const resultsList = document.getElementById('resultsList');
+      if (list.length === 0) {
+        resultsList.innerHTML = `<div class="text-center py-10 text-gray-400 text-sm">현재 조건을 만족하는 후보가 없습니다.</div>`;
+        return;
+      }
+
+      resultsList.innerHTML = list.map((item) => `
+        <div class="bg-gray-900 border border-gray-800 rounded-xl p-3 flex justify-between items-center">
+          <div>
+            <div class="flex items-center gap-2 mb-1">
+              <span class="font-bold text-sm text-white">${item.name}</span>
+              <span class="text-[10px] text-gray-400">${item.market}</span>
+              <span class="badge-${item.stage} text-[10px] px-1.5 py-0.5 rounded font-bold">${item.stage}</span>
+            </div>
+            <div class="text-xs text-gray-400 space-x-2">
+              <span>현재가: ${item.price.toLocaleString()}원</span>
+              <span>24H: ${item.tradePrice24h}억</span>
+            </div>
+            <div class="text-[11px] text-yellow-500/80 mt-1">
+              ${item.flags.join(' · ')}
+            </div>
+          </div>
+          <div class="text-right">
+            <div class="text-lg font-bold text-yellow-400">${item.score}점</div>
+            <button onclick="openModal('${item.market}')" class="mt-1 bg-gray-800 hover:bg-gray-700 text-xs text-gray-200 px-2.5 py-1 rounded border border-gray-700">
+              상세 분석
+            </button>
+          </div>
+        </div>
+      `).join('');
+    }
+
+    function openModal(marketId) {
+      const item = activeCandidates.find(c => c.market === marketId);
+      if (!item) return;
+
+      document.getElementById('modalTitle').innerText = `${item.name} (${item.market})`;
+      const modalBody = document.getElementById('modalBody');
+
+      modalBody.innerHTML = `
+        <div class="grid grid-cols-2 gap-2 bg-gray-800 p-2.5 rounded">
+          <div>구조: <span class="text-yellow-400 font-semibold">${item.structType}</span></div>
+          <div>20SMA 이격: <span class="text-yellow-400 font-semibold">${item.dev20}%</span></div>
+          <div>무효화가: <span class="text-red-400 font-semibold">${item.invalidationPrice.toLocaleString()}원</span></div>
+          <div>손익비(R/R): <span class="text-green-400 font-semibold">${item.rrRatio}</span></div>
+        </div>
+        <div class="bg-gray-800 p-2.5 rounded">
+          <div class="font-semibold text-gray-300 mb-1">G1~G5 점검 표</div>
+          <div class="grid grid-cols-5 text-center text-[10px]">
+            <div>G1: ${item.gStatus.G1}</div>
+            <div>G2: ${item.gStatus.G2}</div>
+            <div>G3: ${item.gStatus.G3}</div>
+            <div>G4: ${item.gStatus.G4}</div>
+            <div>G5: ${item.gStatus.G5}</div>
+          </div>
+        </div>
+      `;
+
+      // Draw Chart
+      const ctx = document.getElementById('chartCanvas').getContext('2d');
+      if (chartInstance) chartInstance.destroy();
+
+      const labels = item.candles.map(c => c.time);
+      const prices = item.candles.map(c => c.close);
+      const sma10 = item.candles.map(c => c.sma10);
+      const sma20 = item.candles.map(c => c.sma20);
+      const sma240 = item.candles.map(c => c.sma240);
+
+      chartInstance = new Chart(ctx, {
+        type: 'line',
+        data: {
+          labels,
+          datasets: [
+            { label: '종가', data: prices, borderColor: '#f59e0b', borderWidth: 1.5, pointRadius: 0 },
+            { label: '10SMA', data: sma10, borderColor: '#3b82f6', borderWidth: 1, pointRadius: 0 },
+            { label: '20SMA', data: sma20, borderColor: '#10b981', borderWidth: 1, pointRadius: 0 },
+            { label: '240SMA', data: sma240, borderColor: '#ef4444', borderWidth: 1, pointRadius: 0 }
+          ]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          scales: {
+            x: { display: false },
+            y: { grid: { color: '#374151' }, ticks: { color: '#9ca3af', font: { size: 9 } } }
+          },
+          plugins: { legend: { labels: { color: '#d1d5db', font: { size: 9 } } } }
+        }
+      });
+
+      document.getElementById('detailModal').classList.remove('hidden');
+    }
+
+    function closeModal() {
+      document.getElementById('detailModal').classList.add('hidden');
+    }
+  </script>
+</body>
+</html>
